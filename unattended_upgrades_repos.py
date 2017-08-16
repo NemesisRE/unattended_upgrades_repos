@@ -5,31 +5,37 @@ import sys
 import fileinput
 import shutil
 import datetime
+import getopt
+
 if len(sys.argv) > 1 and sys.argv[1] == 'y':
     INVOKED = 1
     APPLYQUERY = 'y'
 else:
     INVOKED = 0
+
+DEBUG = True
+
 STARTTIME = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 TARGETFILE = "/etc/apt/apt.conf.d/50unattended-upgrades"
-## Get the repos
+# Get the repos
 PATH = '/var/lib/apt/lists/'
 FILES = os.listdir(PATH)
 RELEASE_FILES = [file for file in FILES if file.endswith('Release')]
 
 ORIGIN_PATTERN = re.compile('Origin: (.*)\n')
 SUITE_PATTERN = re.compile('Suite: (.*)\n')
+CODENAME_PATTERN = re.compile('Codename: (.*)\n')
 REGEX_URL = re.compile(
-    r'^(?:http|ftp)s?://' # http:// or https://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
-    r'localhost|' #localhost...
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
-    r'(?::\d+)?' # optional port
+    r'^(?:http|ftp)s?://'  # http:// or https://
+    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
+    r'localhost|'  # localhost...
+    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+    r'(?::\d+)?'  # optional port
     r'(?:/?|[/?]\S+)$', re.IGNORECASE)
 
 skipped_release_files = []
 repos_to_add = []
-#Determine Distro
+# Determine Distro
 os_info = {}
 with open('/etc/os-release', 'r') as f:
     for line in f:
@@ -43,27 +49,39 @@ for release_file in RELEASE_FILES:
         read_data = f.read()
         # parse to get origin and suite
         try:
-            origin_string = re.findall(ORIGIN_PATTERN, read_data)[0]
-            origin_replaced = origin_string.replace(',', r'\,').replace(DISTRO, '${distro_id}')
-            suite_string = re.findall(SUITE_PATTERN, read_data)[0]
-            suite_replaced = suite_string.replace(',', r'\,').replace(CODENAME, '${distro_codename}')
-            repo = "\"%s:%s\";" %(origin_replaced, suite_replaced)
-            if re.match(REGEX_URL, origin_string):
+            origin_string = re.search(ORIGIN_PATTERN, read_data)
+            suite_string = re.search(SUITE_PATTERN, read_data)
+            codename_string = re.search(CODENAME_PATTERN, read_data)
+            if origin_string is not None:
+                origin_replaced = origin_string.groups()[0].replace(',', r'\,').replace(DISTRO, '${distro_id}')
+            if suite_string is not None:
+                suite_replaced = suite_string.groups()[0].replace(',', r'\,').replace(CODENAME, '${distro_codename}')
+            else:
+                if codename_string is not None:
+                    suite_replaced = codename_string.groups()[0].replace(',', r'\,').replace(CODENAME, '${distro_codename}')
+                else:
+                    suite_replaced = None
+            if DEBUG:
+                print(origin_string)
+                print(suite_string)
+                print(codename_string)
+                print(origin_replaced)
+                print(suite_replaced)
+            if origin_string is None or re.match(REGEX_URL, origin_string.groups()[0]) or suite_replaced is None:
                 skipped_release_files.append(release_file)
             else:
+                repo = '\t"%s:%s";' %(origin_replaced, suite_replaced)
                 repos_to_add.append(repo)
         except IndexError:
             skipped_release_files.append(release_file)
 
 
-
-## Checking if repos_to_add not already present  in /etc/apt/apt.conf.d/50unattended-upgrades
-
+# Checking if repos_to_add not already present  in /etc/apt/apt.conf.d/50unattended-upgrades
 with open(TARGETFILE, 'r') as f:
     READ_DATA = f.read()
     # get everything before first };
     RAW_DATA = re.findall(r'[.\s\S]*};', READ_DATA)[0]
-    REPOS_ALREADY_PRESENT = re.findall('".*:.*";', RAW_DATA)
+    REPOS_ALREADY_PRESENT = re.findall('\s".*:.*";', RAW_DATA)
 
 repos_to_add = [repo for repo in repos_to_add if repo not in REPOS_ALREADY_PRESENT]
 if repos_to_add:
