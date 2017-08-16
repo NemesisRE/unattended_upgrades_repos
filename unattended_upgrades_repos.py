@@ -13,7 +13,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'y':
 else:
     INVOKED = 0
 
-DEBUG = True
+DEBUG = False
 
 STARTTIME = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 TARGETFILE = "/etc/apt/apt.conf.d/50unattended-upgrades"
