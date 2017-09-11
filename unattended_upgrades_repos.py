@@ -5,7 +5,13 @@ import sys
 import fileinput
 import shutil
 import datetime
-import getopt
+import signal
+import logging
+import logging.handlers
+import subprocess
+# import apt_pkg
+
+from optparse import OptionParser
 
 if len(sys.argv) > 1 and sys.argv[1] == 'y':
     INVOKED = 1
@@ -17,78 +23,55 @@ DEBUG = False
 
 STARTTIME = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 TARGETFILE = "/etc/apt/apt.conf.d/50unattended-upgrades"
+
+SKIPPED_RELEASES = []
+REPOS_TO_ADD = []
+
+DISTRO_CODENAME = subprocess.check_output(
+    ["lsb_release", "-c", "-s"], universal_newlines=True).strip()  # type: str
+DISTRO_ID = subprocess.check_output(
+    ["lsb_release", "-i", "-s"], universal_newlines=True).strip()  # type: str
+
+SYSREPO_PATTERN = re.compile('.*o=' + DISTRO_ID + ',a=' + DISTRO_CODENAME + '.*')
+RELEASE_PATTERN = re.compile('\srelease (.*)\n')
+VALID_PATTERN = re.compile('.*(o=|a=|n=).*')
+
 # Get the repos
-PATH = '/var/lib/apt/lists/'
-FILES = os.listdir(PATH)
-RELEASE_FILES = [file for file in FILES if file.endswith('Release')]
+APT_POLICY = subprocess.check_output(["apt-cache", "policy"]).decode('utf-8')
+RELEASES = re.findall(RELEASE_PATTERN, APT_POLICY)
 
-ORIGIN_PATTERN = re.compile('Origin: (.*)\n')
-SUITE_PATTERN = re.compile('Suite: (.*)\n')
-CODENAME_PATTERN = re.compile('Codename: (.*)\n')
-REGEX_URL = re.compile(
-    r'^(?:http|ftp)s?://'  # http:// or https://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
-    r'localhost|'  # localhost...
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-    r'(?::\d+)?'  # optional port
-    r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+for RELEASE in RELEASES:
+    RELEASE_SHORT = []
+    RELEASE_SPLIT = RELEASE.split(",")
+    for STRING in RELEASE_SPLIT:
+        if re.search(VALID_PATTERN, STRING) is not None:
+            RELEASE_SHORT.append(STRING)
+    RELEASE_SHORT = ",".join(RELEASE_SHORT)
+    # parse to get origin and suite
+    try:
+        if re.search(re.compile('.*o=.*'), RELEASE_SHORT) is not None:
+            REPOS_TO_ADD.append('\t"' + RELEASE_SHORT + '"')
+        else:
+            SKIPPED_RELEASES.append(RELEASE_SHORT)
+    except:
+        SKIPPED_RELEASES.append(RELEASE_SHORT)
 
-skipped_release_files = []
-repos_to_add = []
-# Determine Distro
-os_info = {}
-with open('/etc/os-release', 'r') as f:
-    for line in f:
-        if '=' in line:
-            v, w = line.split('=', 1)
-            os_info[v] = w
-DISTRO = os_info['NAME'].replace('"', '').replace('\n', '')
-CODENAME = os_info['VERSION_CODENAME'].replace('\n', '')
-for release_file in RELEASE_FILES:
-    with open(PATH+release_file, 'r') as f:
-        read_data = f.read()
-        # parse to get origin and suite
-        try:
-            origin_string = re.search(ORIGIN_PATTERN, read_data)
-            suite_string = re.search(SUITE_PATTERN, read_data)
-            codename_string = re.search(CODENAME_PATTERN, read_data)
-            if origin_string is not None:
-                origin_replaced = origin_string.groups()[0].replace(',', r'\,').replace(DISTRO, '${distro_id}')
-            if suite_string is not None:
-                suite_replaced = suite_string.groups()[0].replace(',', r'\,').replace(CODENAME, '${distro_codename}')
-            else:
-                if codename_string is not None:
-                    suite_replaced = codename_string.groups()[0].replace(',', r'\,').replace(CODENAME, '${distro_codename}')
-                else:
-                    suite_replaced = None
-            if DEBUG:
-                print(origin_string)
-                print(suite_string)
-                print(codename_string)
-                print(origin_replaced)
-                print(suite_replaced)
-            if origin_string is None or re.match(REGEX_URL, origin_string.groups()[0]) or suite_replaced is None:
-                skipped_release_files.append(release_file)
-            else:
-                repo = '\t"%s:%s";' %(origin_replaced, suite_replaced)
-                repos_to_add.append(repo)
-        except IndexError:
-            skipped_release_files.append(release_file)
-
+# Only unique repos
+REPOS_TO_ADD = sorted(list(set(REPOS_TO_ADD)))
 
 # Checking if repos_to_add not already present  in /etc/apt/apt.conf.d/50unattended-upgrades
 with open(TARGETFILE, 'r') as f:
     READ_DATA = f.read()
     # get everything before first };
     RAW_DATA = re.findall(r'[.\s\S]*};', READ_DATA)[0]
-    REPOS_ALREADY_PRESENT = re.findall('\s".*:.*";', RAW_DATA)
+    REPOS_ALREADY_PRESENT = re.findall('\t"o=.*"', RAW_DATA)
 
-repos_to_add = [repo for repo in repos_to_add if repo not in REPOS_ALREADY_PRESENT]
-if repos_to_add:
+REPOS_TO_ADD = [repo for repo in REPOS_TO_ADD if repo not in REPOS_ALREADY_PRESENT]
+if REPOS_TO_ADD:
     while 1:
         if not INVOKED:
             print("Repos to add:")
-            print('\x1b[1;32;40m' + '\n'.join(repos_to_add) + '\x1b[0m')
+            print('\x1b[1;32;40m' + '\n'.join(REPOS_TO_ADD) + '\x1b[0m')
             print("Do you want to insert these into 50unattended-upgrades? [Y/n]")
             APPLYQUERY = input().lower()
         if APPLYQUERY == '' or APPLYQUERY == 'y' or APPLYQUERY == 'yes':
@@ -105,10 +88,10 @@ if repos_to_add:
                 print("Create backup of current 50unattended-upgrades file? [Y/n]")
                 BACKUPQUERY = input().lower()
                 if BACKUPQUERY == '' or BACKUPQUERY == 'y' or BACKUPQUERY == 'yes':
-                    shutil.copy2(TARGETFILE, TARGETFILE+"-"+STARTTIME+".bak")
+                    shutil.copy2(TARGETFILE, TARGETFILE + "-" + STARTTIME + ".bak")
                 for line in fileinput.FileInput(TARGETFILE, inplace=1):
-                    if "Unattended-Upgrade::Allowed-Origins {" in line:
-                        line = line.replace(line, line+'\n'.join(repos_to_add) + '\n')
+                    if "Unattended-Upgrade::Origins-Pattern {" in line:
+                        line = line.replace(line, line + '\n'.join(REPOS_TO_ADD) + '\n')
                     print(line, end="")
                 break
         elif APPLYQUERY == 'n' or APPLYQUERY == 'no':
@@ -116,9 +99,58 @@ if repos_to_add:
             break
         else:
             print("Please enter y/yes/CR or n/no\n")
-if skipped_release_files:
-    print("Skipping files due to not present origin or suite. Or origin being a url.:\n")
-    print('\x1b[1;32;40m' + '\n'.join(skipped_release_files) + '\x1b[0m')
 else:
-    if not repos_to_add:
+    print("No new Repos found.\n")
+
+if SKIPPED_RELEASES:
+    print("Skipping files due to not present origin or suite. Or origin being a url.:\n")
+    print('\x1b[1;32;40m' + '\n'.join(SKIPPED_RELEASES) + '\x1b[0m')
+else:
+    if not REPOS_TO_ADD:
         print("Nothing do to.")
+
+
+def signal_handler(signal, frame):
+    # type: (int, object) -> None
+    logging.warning("SIGTERM received, will stop")
+    global SIGNAL_STOP_REQUEST
+    SIGNAL_STOP_REQUEST = True
+
+
+def main(options):
+    exit
+
+
+class Options:
+    def __init__(self):
+        self.add_to_config = False
+        self.debug = False
+        self.create_backup = False
+
+if __name__ == "__main__":
+    # init the options
+    parser = OptionParser()
+    parser.add_option("-d", "--debug",
+                      action="store_true", default=False,
+                      help=("print debug messages"))
+    parser.add_option("-a", "--add",
+                      action="store_true", default=False,
+                      help=("Add repos to allowed origins"))
+    parser.add_option("-b", "--backup",
+                      action="store_true", default=False,
+                      help=("Create a backup of 50unattended-upgrades"))
+    (options, args) = parser.parse_args()  # type: ignore
+
+    if os.getuid() != 0:
+        print("You need to be root to run this application")
+        sys.exit(1)
+
+    # ensure that we are not killed when the terminal goes away e.g. on
+    # shutdown
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    # setup signal handler for graceful stopping
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # run the main code
+    main(options)
