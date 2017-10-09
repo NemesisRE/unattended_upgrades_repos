@@ -50,7 +50,7 @@ for RELEASE in RELEASES:
     # parse to get origin and suite
     try:
         if re.search(re.compile('.*o=.*'), RELEASE_SHORT) is not None:
-            REPOS_TO_ADD.append('\t"' + RELEASE_SHORT + '"')
+            REPOS_TO_ADD.append('\t"' + RELEASE_SHORT + '";')
         else:
             SKIPPED_RELEASES.append(RELEASE_SHORT)
     except:
