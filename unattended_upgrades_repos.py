@@ -62,9 +62,7 @@ REPOS_TO_ADD = sorted(list(set(REPOS_TO_ADD)))
 # Checking if repos_to_add not already present  in /etc/apt/apt.conf.d/50unattended-upgrades
 with open(TARGETFILE, 'r') as f:
     READ_DATA = f.read()
-    # get everything before first };
-    RAW_DATA = re.findall(r'[.\s\S]*};', READ_DATA)[0]
-    REPOS_ALREADY_PRESENT = re.findall('\t"o=.*"', RAW_DATA)
+    REPOS_ALREADY_PRESENT = re.findall('\t"o=.*";', READ_DATA)
 
 REPOS_TO_ADD = [repo for repo in REPOS_TO_ADD if repo not in REPOS_ALREADY_PRESENT]
 if REPOS_TO_ADD:
@@ -87,12 +85,19 @@ if REPOS_TO_ADD:
             else:
                 print("Create backup of current 50unattended-upgrades file? [Y/n]")
                 BACKUPQUERY = input().lower()
+                NOORIGINPATTERN = True
                 if BACKUPQUERY == '' or BACKUPQUERY == 'y' or BACKUPQUERY == 'yes':
                     shutil.copy2(TARGETFILE, TARGETFILE + "-" + STARTTIME + ".bak")
                 for line in fileinput.FileInput(TARGETFILE, inplace=1):
                     if "Unattended-Upgrade::Origins-Pattern {" in line:
+                        NOORIGINPATTERN = False
                         line = line.replace(line, line + '\n'.join(REPOS_TO_ADD) + '\n')
                     print(line, end="")
+                if NOORIGINPATTERN:
+                    APPENDORIGINS = open(TARGETFILE, 'a')
+                    APPENDORIGINS.write('\n\nUnattended-Upgrade::Origins-Pattern {\n')
+                    APPENDORIGINS.write("\n".join(REPOS_TO_ADD))
+                    APPENDORIGINS.write('\n};')
                 break
         elif APPLYQUERY == 'n' or APPLYQUERY == 'no':
             print("Not added.\n")
